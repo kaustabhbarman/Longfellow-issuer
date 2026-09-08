@@ -1,4 +1,4 @@
-# meine-issuer
+# Longfellow-issuer
 
 Standalone OpenID4VCI issuer for mdoc/SD-JWT credentials, extracted from
 [Multipaz](https://github.com/openwallet-foundation/multipaz) at tag **0.99.0**.
