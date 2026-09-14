@@ -1,143 +1,1302 @@
-# Longfellow-issuer
+# EPOCH – OpenID4VCI Credential Issuer
 
-Standalone OpenID4VCI issuer for mdoc/SD-JWT credentials, extracted from
-[Multipaz](https://github.com/openwallet-foundation/multipaz) at tag **0.99.0**.
+A standalone **OpenID for Verifiable Credential Issuance (OID4VCI)** issuer based on the Multipaz framework, used within the EPOCH digital identity project.
 
-The two issuer modules (`multipaz-openid4vci` library + `multipaz-openid4vci-server`)
-are vendored as source; all other Multipaz modules are consumed as published
-Maven artifacts at 0.99.0.
+This repository provides the issuer/backend component responsible for credential issuance requests, OAuth authorization, proof-of-possession mechanisms, credential creation, signing, and credential lifecycle state.
 
-## Why pinned at 0.99.0
+---
 
-Multipaz [PR #1904](https://github.com/openwallet-foundation/multipaz/pull/1904)
-(2026-08-13) makes the issuer add `keyAuthorizations` to every MSO's
-`deviceKeyInfo`. The Google Longfellow ZK circuits (v6 and v7) cannot generate
-proofs over such MSOs — ZKP presentment fails with
-`MDOC_PROVER_GENERAL_FAILURE` (error code 6) while classic presentment keeps
-working. Version 0.99.0 predates that change, so credentials issued by this
-server are ZKP-compatible.
+## Quick Start — Run the Issuer First
 
-If you ever update the vendored modules past that commit, remove the
-`deviceKeyAuthorizedNamespaces = listOf(PingTransaction.mdocResponseNamespace)`
-argument in `multipaz-openid4vci/.../CredentialFactoryMdl.kt`.
+This section is intentionally placed before the repository explanation so a new developer can get the issuer running before studying the architecture.
 
-## The `base_url` setting
+### 1. Prerequisites
 
-The issuer embeds `base_url` in its metadata
-(`/.well-known/openid-credential-issuer`) and in every credential offer, so it
-must be **the URL the wallet device itself can reach** — not just a URL that
-works on the machine running the server. Every setup below differs only in what
-that URL is.
+Install:
 
-Without `base_url`, it defaults to `http://localhost:<server_port>`, which only
-works for a client on the same machine. The server binds `0.0.0.0:8007`, so it
-is reachable on loopback and over the LAN at the same time.
+- Java 21
+- Git
+- ngrok (only when the issuer must be reachable through a public HTTPS URL)
 
-## Running with ngrok (https, works everywhere)
+Check Java:
 
-```sh
-ngrok http 8007          # in one terminal
-./run-local-issuer.sh https://YOUR-NGROK-URL
+```bash
+java -version
 ```
 
-This is the simplest option for a phone that is not on your network, and the
-only one that needs no wallet-side changes (see the cleartext note below).
+The project uses the Gradle wrapper, so a separate Gradle installation is normally not required.
 
-## Running locally without ngrok
+### 2. Start the issuer locally
 
-The server speaks **plain HTTP only** — it has no TLS support of its own. That
-matters because Android blocks cleartext HTTP by default: any wallet targeting
-API 28+ without an explicit exception (Multipaz's sample wallet included) will
-refuse to talk to `http://` URLs. So a no-ngrok setup needs a one-time wallet
-change, described at the end of this section.
+From the repository root:
 
-### Desktop browser only (no wallet)
-
-To browse the web UI, inspect metadata, or use the admin page:
-
-```sh
+```bash
 ./gradlew :multipaz-openid4vci-server:run
 ```
 
-Then open <http://localhost:8007>. Provisioning into a wallet will not work with
-this `base_url`, since `localhost` on the phone means the phone itself.
+The issuer runs on:
 
-### Android emulator
-
-The emulator reaches the host machine at the special address `10.0.2.2`:
-
-```sh
-./run-local-issuer.sh http://10.0.2.2:8007
+```text
+http://localhost:8007
 ```
 
-Open `http://10.0.2.2:8007` in the emulator's browser to get a credential offer.
+Keep this terminal running.
 
-An alternative that keeps the URL as `localhost` is an adb reverse tunnel, which
-forwards the device's port 8007 to the host's:
+### 3. Test the local issuer
 
-```sh
+In another terminal:
+
+```bash
+curl http://localhost:8007/.well-known/openid-credential-issuer
+```
+
+You should receive the issuer metadata as JSON.
+
+You can also check:
+
+```bash
+curl http://localhost:8007/.well-known/oauth-authorization-server
+```
+
+### 4. Android emulator access
+
+For the standard Android emulator:
+
+```text
+http://10.0.2.2:8007
+```
+
+Alternatively:
+
+```bash
 adb reverse tcp:8007 tcp:8007
-./gradlew :multipaz-openid4vci-server:run     # base_url defaults to http://localhost:8007
 ```
 
-The tunnel is dropped when the device disconnects, so re-run `adb reverse` after
-a reconnect.
+Then the emulator can access:
 
-### Physical device on the same network
-
-Use the host machine's LAN address, e.g. found with:
-
-```sh
-ipconfig getifaddr en0        # macOS, Wi-Fi
-hostname -I                   # Linux
+```text
+http://localhost:8007
 ```
 
-Then start the server with that address:
+---
 
-```sh
-./run-local-issuer.sh http://192.168.0.237:8007
+# Public HTTPS Access with ngrok
+
+For EPOCH wallet/issuer testing, the issuer may need to be reachable through a public HTTPS URL.
+
+ngrok creates a secure outbound tunnel from the local machine to ngrok's cloud service. Incoming requests to the public ngrok endpoint are forwarded to the local issuer.
+
+```text
+                    Internet
+                       │
+                       │ HTTPS
+                       ▼
+              ┌─────────────────┐
+              │   ngrok Cloud   │
+              └────────┬────────┘
+                       │
+                 secure tunnel
+                       │
+                       ▼
+              ┌─────────────────┐
+              │  ngrok Agent    │
+              │ developer host  │
+              └────────┬────────┘
+                       │
+                 localhost:8007
+                       │
+                       ▼
+              ┌─────────────────┐
+              │ EPOCH Issuer    │
+              │ Ktor / OID4VCI  │
+              └─────────────────┘
 ```
 
-Both devices must be on the same network, with no client isolation on the
-access point, and the host firewall must allow inbound connections on port 8007.
+### 5. Register for ngrok
 
-### Wallet-side prerequisite: allow cleartext HTTP
+Create an ngrok account:
 
-All of the HTTP setups above require the wallet to permit cleartext traffic to
-that host. In the wallet project, add `composeApp/src/androidMain/res/xml/network_security_config.xml`:
+https://ngrok.com/
 
-```xml
-<?xml version="1.0" encoding="utf-8"?>
-<network-security-config>
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="false">10.0.2.2</domain>
-        <domain includeSubdomains="false">localhost</domain>
-        <domain includeSubdomains="false">192.168.0.237</domain>
-    </domain-config>
-</network-security-config>
+Then open:
+
+https://dashboard.ngrok.com/get-started/setup
+
+After signing in, obtain the **authtoken** from the dashboard.
+
+### 6. Install ngrok
+
+Linux/WSL:
+
+https://ngrok.com/download/linux
+
+Windows:
+
+https://ngrok.com/download/windows
+
+Verify:
+
+```bash
+ngrok version
 ```
 
-and reference it from the `<application>` tag in
-`composeApp/src/androidMain/AndroidManifest.xml`:
+### 7. Authenticate the ngrok agent
 
-```xml
-android:networkSecurityConfig="@xml/network_security_config"
+```bash
+ngrok config add-authtoken "<YOUR_AUTHTOKEN>"
 ```
 
-Scope the exception to these development hosts rather than enabling
-`android:usesCleartextTraffic="true"` globally, and keep it out of any build you
-distribute.
+Do **not** commit the authtoken to Git.
 
-## Notes
+### 8. Start the issuer
 
-- Admin page: `/admin.html` (password `meinewallet-admin`, set in
-  `run-local-issuer.sh`).
-- On first credential issuance the server enrolls its document-signing (DS)
-  certificate against `https://issuer.multipaz.org/records` (the Multipaz
-  default `enrollment_server_url`), so the first run needs internet access even
-  in a local setup. The DS private key never leaves the machine.
-- Server state (keys, DS certificate, issuance sessions) lives in a local
-  database created at runtime and is gitignored; deleting it makes the server
-  re-enroll on next issuance.
-- Changing `base_url` after credentials have been issued invalidates them for
-  refresh purposes, since issuer URLs are recorded in the wallet.
+Terminal 1:
+
+```bash
+./gradlew :multipaz-openid4vci-server:run
+```
+
+### 9. Start the tunnel
+
+Terminal 2:
+
+```bash
+ngrok http 8007
+```
+
+ngrok will display something similar to:
+
+```text
+Forwarding    https://<assigned-id>.ngrok.app -> http://localhost:8007
+```
+
+The exact public URL is generated by ngrok.
+
+### 10. Get and verify the public issuer link
+
+Copy the HTTPS URL:
+
+```text
+https://<assigned-id>.ngrok.app
+```
+
+Test it:
+
+```bash
+curl https://<assigned-id>.ngrok.app/.well-known/openid-credential-issuer
+```
+
+The public endpoints are then:
+
+```text
+Issuer:
+https://<assigned-id>.ngrok.app
+
+OID4VCI discovery:
+https://<assigned-id>.ngrok.app/.well-known/openid-credential-issuer
+
+OAuth discovery:
+https://<assigned-id>.ngrok.app/.well-known/oauth-authorization-server
+
+Credential endpoint:
+https://<assigned-id>.ngrok.app/credential
+```
+
+### 11. Use the public URL in the wallet
+
+When an externally reachable issuer is required, use:
+
+```text
+https://<assigned-id>.ngrok.app
+```
+
+instead of:
+
+```text
+http://localhost:8007
+```
+
+or:
+
+```text
+http://10.0.2.2:8007
+```
+
+The complete setup is:
+
+**Terminal 1 — Issuer**
+
+```bash
+./gradlew :multipaz-openid4vci-server:run
+```
+
+**Terminal 2 — ngrok**
+
+```bash
+ngrok http 8007
+```
+
+Both processes must remain running.
+
+### ngrok URL lifecycle
+
+With:
+
+```bash
+ngrok http 8007
+```
+
+the public endpoint is associated with the running tunnel. Do not hard-code a temporary URL into the repository.
+
+If a stable/custom endpoint is required, configure an appropriate ngrok endpoint/domain for the ngrok account.
+
+### Security warning
+
+An ngrok tunnel makes the local issuer reachable from the internet.
+
+Never expose real:
+
+- Private keys
+- Passwords
+- OAuth client secrets
+- Access tokens
+- Production credentials
+- Production identity data
+- ngrok authtokens
+
+through a development tunnel.
+
+For additional protection, ngrok supports authentication and Traffic Policy.
+
+---
+
+## Project Overview
+
+The EPOCH project explores decentralized and privacy-preserving digital identity using technologies including:
+
+- Self-Sovereign Identity (SSI)
+- Verifiable Credentials (VCs)
+- Mobile Documents (mdoc)
+- OpenID for Verifiable Credential Issuance (OID4VCI)
+- OpenID for Verifiable Presentations (OID4VP)
+- Zero-Knowledge Proofs (ZKP)
+- Longfellow
+
+This repository contains the **credential issuer/backend**.
+
+```text
+                    EPOCH Identity System
+
+                         ┌───────────┐
+                         │   User    │
+                         │   Wallet  │
+                         └─────┬─────┘
+                               │
+                               │ OID4VCI
+                               ▼
+                    ┌────────────────────┐
+                    │ Credential Issuer  │
+                    │                    │
+                    │ This Repository    │
+                    └─────────┬──────────┘
+                              │
+                              │ Credential
+                              ▼
+                    ┌────────────────────┐
+                    │ Credential Factory │
+                    │                    │
+                    │ mDL / PID / etc.   │
+                    └────────────────────┘
+```
+
+The issuer is responsible for:
+
+1. Issuer and authorization-server discovery.
+2. Wallet/client authentication.
+3. OAuth authorization.
+4. Access and refresh tokens.
+5. DPoP proof validation.
+6. Credential key-binding proof validation.
+7. Obtaining identity data.
+8. Credential creation.
+9. Issuer signing.
+10. Returning credentials to the wallet.
+11. Maintaining server-side issuance and credential state.
+
+---
+
+## Architecture
+
+The main issuance flow is:
+
+```text
+Wallet
+  │
+  │ Credential Offer
+  ▼
+┌─────────────────────────────┐
+│ Credential Issuer           │
+│                             │
+│ /.well-known/...            │
+│ /par                        │
+│ /authorize                  │
+│ /token                      │
+│ /nonce                      │
+│ /credential                 │
+└─────────────┬───────────────┘
+              │
+              ▼
+       Credential Factory
+              │
+              ▼
+       Credential Creation
+              │
+              ▼
+       Signed Credential
+              │
+              ▼
+            Wallet
+```
+
+The issuer separates the **protocol layer** from the **credential construction layer**.
+
+### Protocol layer
+
+Handles:
+
+- OID4VCI
+- OAuth 2.0
+- PKCE
+- DPoP
+- Client attestation
+- Client assertion
+- Authorization
+- Access tokens
+- Refresh tokens
+- Nonce handling
+
+### Credential layer
+
+Handles:
+
+- Credential data
+- Credential format
+- Cryptographic binding
+- Issuer signing
+- Credential status
+- Credential-specific encoding
+
+---
+
+## Repository Structure
+
+```text
+Longfellow-issuer/
+│
+├── multipaz-openid4vci/
+│   └── OpenID4VCI implementation
+│
+├── multipaz-openid4vci-server/
+│   └── HTTP server implementation
+│
+├── gradle/
+├── gradlew
+├── gradlew.bat
+├── settings.gradle.kts
+└── README.md
+```
+
+### `multipaz-openid4vci`
+
+Contains the reusable OpenID4VCI implementation and protocol logic.
+
+### `multipaz-openid4vci-server`
+
+Contains the server implementation and HTTP endpoints. It connects OID4VCI with:
+
+- Ktor
+- Credential factories
+- Issuer configuration
+- Authorization
+- Token handling
+- Credential issuance
+- Credential status infrastructure
+
+---
+
+## Supported Credential Types
+
+The server currently registers credential factories for:
+
+- mDL
+- mdoc PID
+- SD-JWT PID
+- Utopia Naturalization
+- Utopia Movie Ticket
+- Age Verification
+- Utopia Loyalty
+- Digital Payment Credential
+
+The credential registry maps credential configurations to the appropriate credential factory.
+
+```text
+credential_configuration_id
+             │
+             ▼
+     CredentialFactoryRegistry
+             │
+             ▼
+       CredentialFactoryMdl
+             │
+             ▼
+          mso_mdoc
+```
+
+---
+
+## Important HTTP Endpoints
+
+### OID4VCI Discovery
+
+```http
+GET /.well-known/openid-credential-issuer
+```
+
+Returns issuer metadata including:
+
+- Credential endpoint
+- Nonce endpoint
+- Supported credential configurations
+- Credential formats
+- Proof/key-binding requirements
+- Authorization servers
+
+### OAuth Authorization Server Discovery
+
+```http
+GET /.well-known/oauth-authorization-server
+```
+
+Provides OAuth metadata such as:
+
+- Authorization endpoint
+- Pushed Authorization Request endpoint
+- Token endpoint
+- Supported authentication mechanisms
+- DPoP-related algorithms
+
+### Pushed Authorization Request
+
+```http
+POST /par
+```
+
+The wallet sends a Pushed Authorization Request.
+
+The issuer:
+
+1. Reads authorization parameters.
+2. Validates the requested credential.
+3. Validates client authentication.
+4. Processes DPoP.
+5. Creates an issuance session.
+6. Generates an opaque request URI.
+7. Returns the request URI.
+
+Example:
+
+```json
+{
+  "request_uri": "urn:ietf:params:oauth:request_uri:<opaque-code>",
+  "expires_in": 300
+}
+```
+
+A successful PAR request **does not issue a credential**. It creates the authorization transaction.
+
+---
+
+## Authorization Flow
+
+```text
+Wallet
+   │
+   │ PAR
+   ▼
+Issuer
+   │
+   │ request_uri
+   ▼
+Authorization
+   │
+   ├── User authorization
+   ├── Identity/PID verification
+   └── Authorization state
+   │
+   ▼
+Authorization Code
+   │
+   ▼
+Wallet
+```
+
+The issuer can integrate with a System of Record (SoR) to obtain identity data. Development/demo behavior is also available for testing identity-data flows.
+
+---
+
+## Token Endpoint
+
+```http
+POST /token
+```
+
+The token endpoint supports:
+
+- Authorization Code Grant
+- Refresh Token Grant
+- Pre-authorized Code Grant
+
+The server validates relevant mechanisms including:
+
+- Authorization code
+- PKCE code verifier
+- Client attestation
+- Client-attestation proof-of-possession
+- DPoP
+- Transaction code where applicable
+
+Example response:
+
+```json
+{
+  "access_token": "...",
+  "refresh_token": "...",
+  "expires_in": 3600,
+  "token_type": "DPoP"
+}
+```
+
+The access token is subsequently used at the credential endpoint.
+
+---
+
+## DPoP
+
+The issuer uses **Demonstrating Proof of Possession (DPoP)** to bind requests to a cryptographic key.
+
+Instead of:
+
+```http
+Authorization: Bearer <token>
+```
+
+the wallet uses:
+
+```http
+Authorization: DPoP <token>
+DPoP: <JWT>
+```
+
+The DPoP proof binds a request to:
+
+- Client identity
+- HTTP method
+- HTTP URI
+- Cryptographic key
+- Nonce where required
+- Access-token hash (`ath`) when applicable
+
+Conceptually:
+
+```text
+              Wallet
+                │
+        private DPoP key
+                │
+                ▼
+        ┌──────────────┐
+        │ DPoP JWT     │
+        │              │
+        │ HTM          │
+        │ HTU          │
+        │ JWK          │
+        │ nonce        │
+        │ ath          │
+        └──────┬───────┘
+               │
+               ▼
+             Issuer
+               │
+               ▼
+       Verify proof of
+       private-key possession
+```
+
+The private key is not sent to the issuer.
+
+---
+
+## Client Attestation
+
+The issuer can authenticate the wallet using:
+
+- Client assertion
+- Client attestation
+
+Client attestation uses headers such as:
+
+```http
+OAuth-Client-Attestation: <JWT>
+OAuth-Client-Attestation-PoP: <JWT>
+```
+
+The issuer validates the attestation and verifies possession of the corresponding private key.
+
+---
+
+## Credential Endpoint
+
+```http
+POST /credential
+```
+
+This is where the actual credential is created.
+
+```text
+Access Token
+     │
+     ▼
+Validate DPoP
+     │
+     ▼
+Read credential request
+     │
+     ▼
+Find CredentialFactory
+     │
+     ▼
+Validate credential proof
+     │
+     ▼
+Read identity data
+     │
+     ▼
+factory.mint(...)
+     │
+     ▼
+Store CredentialState
+     │
+     ▼
+Return credential
+```
+
+Important distinction:
+
+> `/token` authorizes the wallet.
+
+> `/credential` creates the credential.
+
+---
+
+## CredentialFactory
+
+Credential factories create the actual credential.
+
+For example:
+
+```text
+CredentialFactoryMdl
+```
+
+creates an ISO 18013-5 mobile driver's license.
+
+Its `mint()` function receives:
+
+```text
+systemOfRecordData
+authenticationKey
+credentialId
+```
+
+and produces a:
+
+```text
+MintedCredential
+```
+
+The `authenticationKey` is the wallet/device public key used for cryptographic binding.
+
+The issuer uses a separate signing key.
+
+```text
+Wallet/device key
+        │
+        ▼
+Credential device binding
+
+Issuer signing key
+        │
+        ▼
+Issuer authentication/signature
+```
+
+---
+
+## mDL Creation
+
+The mDL factory creates issuer namespaces containing credential data such as:
+
+- Given name
+- Family name
+- Date of birth
+- Address
+- Portrait
+- Age-related derived values
+- Driver's-license-specific fields
+
+The data is encoded using CBOR.
+
+The factory creates a **Mobile Security Object (MSO)** containing information such as:
+
+- Document type
+- Signing time
+- Validity period
+- Digest algorithm
+- Value digests
+- Device public key
+- Revocation status
+
+```text
+                 mDL
+                  │
+        ┌─────────┴─────────┐
+        │                   │
+ Issuer namespaces          MSO
+        │                   │
+ actual credential          │
+ data                       │
+                            ├── value digests
+                            ├── device key
+                            ├── validity
+                            └── revocation status
+```
+
+The issuer signs the MSO using COSE.
+
+---
+
+## Credential Signing
+
+The issuer uses its own signing key to create the issuer authentication structure.
+
+```text
+Issuer namespaces
+       │
+       ▼
+   Value digests
+       │
+       ▼
+      MSO
+       │
+       ▼
+ COSE_Sign1 signature
+       │
+       ▼
+ Issuer authentication
+```
+
+The issuer's private signing key remains on the issuer.
+
+---
+
+## Credential Key Binding
+
+For cryptographically bound credentials, the credential contains a reference to the wallet/device public key.
+
+For mdoc:
+
+```text
+MSO
+ └── deviceKey
+       └── wallet public key
+```
+
+The wallet retains the corresponding private key and can prove possession during later presentation.
+
+```text
+Issuer
+  │
+  │ signs credential
+  ▼
+Credential
+  │
+  │ contains
+  ▼
+Wallet public key
+  │
+  │ corresponds to
+  ▼
+Wallet private key
+```
+
+---
+
+## Credential State
+
+The issuer maintains server-side state using `CredentialState`.
+
+This is different from the credential itself.
+
+```text
+Credential
+    │
+    └── Actual credential data
+
+CredentialState
+    │
+    ├── Issuance state
+    ├── Credential format
+    ├── Key ID
+    ├── Creation time
+    └── Expiration
+```
+
+This state supports credential lifecycle management.
+
+---
+
+## Credential Lifecycle
+
+```text
+                ┌───────────┐
+                │   Issue   │
+                └─────┬─────┘
+                      │
+                      ▼
+                ┌───────────┐
+                │   Store   │
+                └─────┬─────┘
+                      │
+                      ▼
+               ┌────────────┐
+               │  Present   │
+               └─────┬──────┘
+                     │
+                     ▼
+               ┌────────────┐
+               │   Verify   │
+               └─────┬──────┘
+                     │
+             ┌───────┴────────┐
+             ▼                ▼
+          Update           Revoke
+```
+
+Status-related endpoints include:
+
+```http
+GET /status_list/{bucket}
+GET /identifier_list/{bucket}
+```
+
+Administrative endpoints are also available for credential status management.
+
+---
+
+## Nonce Management
+
+The issuer maintains different nonce contexts, including:
+
+- Authorization-server DPoP nonce
+- Client-attestation nonce
+- Credential/resource-server DPoP nonce
+- Credential key-binding challenge
+
+Conceptually:
+
+```text
+Request
+   │
+   ▼
+Nonce challenge
+   │
+   ▼
+Wallet creates proof
+   │
+   ▼
+Issuer validates proof
+   │
+   ▼
+Nonce consumed
+```
+
+---
+
+## Longfellow and Zero-Knowledge Proofs
+
+Longfellow is used in the broader EPOCH wallet/presentation workflow for privacy-preserving proofs.
+
+The credential issuance server primarily creates and signs the credential.
+
+```text
+             ISSUANCE
+                 │
+                 ▼
+        OID4VCI + Credential
+                 │
+                 ▼
+              Wallet
+                 │
+          PRESENTATION
+                 │
+                 ▼
+              OID4VP
+                 │
+                 ▼
+       Zero-Knowledge Proof
+                 │
+                 ▼
+             Verifier
+```
+
+OID4VCI answers:
+
+> How does the wallet obtain a credential?
+
+Longfellow/ZKP is relevant to:
+
+> How can the wallet prove something about the credential while minimizing disclosure?
+
+---
+
+## Wallet Integration
+
+The corresponding EPOCH wallet communicates with this issuer using OID4VCI.
+
+The wallet:
+
+1. Receives a credential offer.
+2. Discovers issuer metadata.
+3. Discovers authorization-server metadata.
+4. Performs authorization.
+5. Obtains an access token.
+6. Creates key-binding proofs.
+7. Calls `/credential`.
+8. Receives the credential.
+9. Stores the credential locally.
+10. Later presents it through OID4VP.
+
+Complete high-level flow:
+
+```text
+                 Credential Offer
+                        │
+                        ▼
+              ┌─────────────────┐
+              │      Wallet     │
+              └────────┬────────┘
+                       │
+                       │ OID4VCI
+                       ▼
+              ┌─────────────────┐
+              │     Issuer      │
+              │                 │
+              │  /.well-known  │
+              │  /par           │
+              │  /authorize     │
+              │  /token         │
+              │  /credential    │
+              └────────┬────────┘
+                       │
+                       ▼
+              CredentialFactory
+                       │
+                       ▼
+                  Signed mdoc
+                       │
+                       ▼
+                    Wallet
+                       │
+                       ▼
+                 DocumentStore
+                       │
+                       ▼
+                    OID4VP
+                       │
+                       ▼
+                 Presentation
+                       │
+                       ▼
+                 Longfellow ZKP
+                       │
+                       ▼
+                   Verifier
+```
+
+---
+
+## Development and Security Notes
+
+This repository contains development, experimentation, and research components.
+
+Some flows contain development/demo behavior, including:
+
+- Local/demo System-of-Record data
+- Sample credential values
+- Sample credential images
+- Development credential configurations
+- Test certificates/keys
+- Simplified authorization behavior
+
+These should **not automatically be treated as production security architecture**.
+
+For production deployment, use:
+
+- Securely managed signing keys
+- Real certificate chains
+- Secure key storage
+- Real identity data sources
+- Production trust anchors
+- Proper credential status infrastructure
+- Appropriate authorization policies
+- Secure client-attestation provisioning
+
+**Never commit real private keys, passwords, access tokens, or other secrets to Git.**
+
+---
+
+## Useful Commands
+
+### Build
+
+```bash
+./gradlew build
+```
+
+### Run issuer
+
+```bash
+./gradlew :multipaz-openid4vci-server:run
+```
+
+### Clean build
+
+```bash
+./gradlew clean build
+```
+
+### Inspect dependencies
+
+```bash
+./gradlew :multipaz-openid4vci-server:dependencies
+```
+
+### Run with ngrok
+
+Terminal 1:
+
+```bash
+./gradlew :multipaz-openid4vci-server:run
+```
+
+Terminal 2:
+
+```bash
+ngrok http 8007
+```
+
+---
+
+## Debugging the Issuance Flow
+
+The main endpoints to trace are:
+
+```text
+/.well-known/openid-credential-issuer
+        │
+        ▼
+/.well-known/oauth-authorization-server
+        │
+        ▼
+/par
+        │
+        ▼
+/authorize
+        │
+        ▼
+/finish_authorization
+        │
+        ▼
+/token
+        │
+        ▼
+/nonce
+        │
+        ▼
+/credential
+```
+
+When debugging, inspect:
+
+- HTTP status codes
+- Request headers
+- DPoP headers
+- Client-attestation headers
+- Request body
+- Response body
+- Nonce challenges
+- Authorization state
+- Issuance state
+- Credential factory selection
+- Credential proof validation
+- Credential creation
+
+---
+
+## Key Source Files
+
+Important implementation files include:
+
+```text
+multipaz-openid4vci-server/
+└── src/main/java/org/multipaz/openid4vci/server/
+
+    Main.kt
+        Server startup and credential-factory registration
+
+    ApplicationExt.kt
+        HTTP routing
+
+    auth.kt
+        Authentication, DPoP and client-attestation validation
+
+    authorize.kt
+        Authorization handling
+
+    finishAuthorization.kt
+        Authorization completion and credential-offer generation
+
+    pushedAuthorizationRequest.kt
+        PAR handling
+
+    token.kt
+        OAuth token endpoint
+
+    credential.kt
+        Credential endpoint and credential creation
+
+    NonceManager.kt
+    NonceManagerDefault.kt
+        Nonce handling
+
+    CredentialFactoryMdl.kt
+        mDL creation
+```
+
+---
+
+## Security Model
+
+The issuer uses several layers of cryptographic protection:
+
+```text
+                     Issuer
+                       │
+          ┌────────────┼────────────┐
+          │            │            │
+          ▼            ▼            ▼
+      OAuth 2.0       DPoP      Credential
+                                   Signing
+          │            │            │
+          ▼            ▼            ▼
+     Authorization  Proof of    Issuer
+                    possession   authenticity
+```
+
+For key-bound credentials:
+
+```text
+Wallet
+ ├── Private key
+ │
+ └── Public key
+          │
+          ▼
+      Credential
+          │
+          ▼
+        MSO
+          │
+          └── deviceKey
+```
+
+The wallet proves possession of the private key during later presentation.
+
+---
+
+## Design Principles
+
+### Separation of protocol and credential
+
+OID4VCI controls the issuance protocol while credential factories control credential construction.
+
+### Separation of issuer and wallet keys
+
+The issuer signing key and wallet authentication/device key serve different purposes.
+
+### Proof of possession
+
+DPoP and credential proofs provide cryptographic proof that the requester controls the relevant private key.
+
+### Privacy
+
+The architecture supports selective disclosure and zero-knowledge proof workflows.
+
+### Credential lifecycle
+
+Credentials are not treated as static objects. Issuance, storage, presentation, verification, update, and revocation are separate lifecycle stages.
+
+---
+
+## Related EPOCH Components
+
+This repository is one component of the broader EPOCH identity system.
+
+```text
+                 ┌─────────────────────┐
+                 │       EPOCH         │
+                 │  Digital Identity   │
+                 └──────────┬──────────┘
+                            │
+          ┌─────────────────┼─────────────────┐
+          │                 │                 │
+          ▼                 ▼                 ▼
+       Wallet            Issuer            Verifier
+          │                 │                 │
+          │                 │                 │
+       OID4VCI ◄────────────┘                 │
+          │                                   │
+          ▼                                   │
+       Document                              │
+       Storage                                │
+          │                                   │
+          ▼                                   │
+       OID4VP ────────────────────────────────┘
+          │
+          ▼
+       ZKP / Longfellow
+```
+
+---
+
+## Status
+
+This repository is currently used for **development, experimentation, and research** around privacy-preserving digital identity and interoperable credential issuance.
+
+The implementation should be considered a development/test environment unless explicitly configured and reviewed for production use.
+
+---
+
+## License
+
+See the repository's license and the licenses of the underlying Multipaz components for applicable terms.
