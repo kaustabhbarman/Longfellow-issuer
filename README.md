@@ -1,4 +1,4 @@
-# EPOCH – OpenID4VCI Credential Issuer
+# LongFellow Issuer
 
 A standalone **OpenID for Verifiable Credential Issuance (OID4VCI)** issuer based on the Multipaz framework, used within the EPOCH digital identity project.
 
